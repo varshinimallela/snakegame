@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finger-Controlled Snake Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #fce7f3, #f3e8ff, #e0e7ff);
+            font-family: 'Arial', sans-serif;
+        }
+        .game-container {
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        .snake-segment {
+            border-radius: 2px;
+        }
+        .finger-indicator {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background: #ff6b6b;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 2px 10px rgba(255,107,107,0.5);
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            transition: all 0.1s ease;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <div class="game-container bg-white rounded-2xl p-6 max-w-4xl w-full">
+        <!-- Header -->
+        <div class="text-center mb-6">
+            <h1 class="text-4xl font-bold text-gray-800 mb-2">🐍 Finger Snake</h1>
+            <p class="text-gray-600">Control the snake with your index finger!</p>
+        </div>
+
+        <!-- Game Stats -->
+        <div class="flex justify-between items-center mb-4 bg-gray-50 rounded-lg p-4">
+            <div class="text-center">
+                <div class="text-2xl font-bold text-purple-600" id="score">0</div>
+                <div class="text-sm text-gray-600">Score</div>
+            </div>
+            <div class="text-center">
+                <div class="text-lg font-semibold" id="status">Ready</div>
+                <div class="text-sm text-gray-600">Status</div>
+            </div>
+            <div class="text-center">
+                <div class="text-2xl font-bold text-green-600" id="speed">1</div>
+                <div class="text-sm text-gray-600">Speed</div>
+            </div>
+        </div>
+
+        <!-- Game Area -->
+        <div class="relative bg-gray-900 rounded-lg overflow-hidden mb-4" style="aspect-ratio: 16/10;">
+            <canvas id="gameCanvas" class="absolute inset-0 w-full h-full"></canvas>
+            <video id="inputVideo" class="absolute top-2 right-2 w-32 h-24 rounded border-2 border-white opacity-75" autoplay muted playsinline></video>
+            <canvas id="outputCanvas" class="absolute top-2 right-2 w-32 h-24 rounded border-2 border-white"></canvas>
+            <div id="fingerIndicator" class="finger-indicator" style="display: none;"></div>
+            <div id="cameraStatus" class="absolute top-2 left-2 bg-black bg-opacity-50 text-white px-3 py-1 rounded text-sm">
+                📷 Initializing camera...
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex flex-wrap gap-3 justify-center">
+            <button id="startBtn" class="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+                ▶️ Start
+            </button>
+            <button id="pauseBtn" class="bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors" disabled>
+                ⏸️ Pause
+            </button>
+            <button id="resetBtn" class="bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+                🔄 Reset
+            </button>
+            <button id="toggleCamera" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+                📷 Toggle Camera
+            </button>
+        </div>
+
+        <!-- Instructions -->
+        <div class="mt-6 bg-blue-50 rounded-lg p-4">
+            <h3 class="font-semibold text-blue-800 mb-2">How to Play:</h3>
+            <ul class="text-sm text-blue-700 space-y-1">
+                <li>• Point your index finger at the camera to control the snake</li>
+                <li>• Move your finger to guide the snake toward food</li>
+                <li>• Eat food to grow longer and increase your score</li>
+                <li>• Avoid hitting walls or your own tail</li>
+                <li>• If camera fails, use mouse/touch to control</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        class FingerSnakeGame {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.video = document.getElementById('inputVideo');
+                this.outputCanvas = document.getElementById('outputCanvas');
+                this.outputCtx = this.outputCanvas.getContext('2d');
+                
+                this.setupCanvas();
+                this.initializeGame();
+                this.setupEventListeners();
+                this.initializeCamera();
+                
+                this.gameLoop = null;
+                this.lastTime = 0;
+                this.gameSpeed = 150; // milliseconds between moves
+            }
+
+            setupCanvas() {
+                const container = this.canvas.parentElement;
+                const rect = container.getBoundingClientRect();
+                this.canvas.width = rect.width;
+                this.canvas.height = rect.height;
+                this.outputCanvas.width = 160;
+                this.outputCanvas.height = 120;
+                
+                this.gridSize = 20;
+                this.cols = Math.floor(this.canvas.width / this.gridSize);
+                this.rows = Math.floor(this.canvas.height / this.gridSize);
+            }
+
+            initializeGame() {
+                this.snake = [
+                    { x: Math.floor(this.cols / 2), y: Math.floor(this.rows / 2) }
+                ];
+                this.direction = { x: 1, y: 0 };
+                this.food = this.generateFood();
+                this.score = 0;
+                this.gameRunning = false;
+                this.gamePaused = false;
+                this.speed = 1;
+                this.fingerPosition = null;
+                this.cameraEnabled = false;
+                this.lastDirection = { x: 1, y: 0 };
+                
+                this.updateUI();
+                this.draw();
+            }
+
+            generateFood() {
+                let food;
+                do {
+                    food = {
+                        x: Math.floor(Math.random() * this.cols),
+                        y: Math.floor(Math.random() * this.rows)
+                    };
+                } while (this.snake.some(segment => segment.x === food.x && segment.y === food.y));
+                return food;
+            }
+
+            async initializeCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { 
+                            width: 640, 
+                            height: 480,
+                            facingMode: 'user'
+                        } 
+                    });
+                    this.video.srcObject = stream;
+                    
+                    this.video.onloadedmetadata = () => {
+                        this.initializeMediaPipe();
+                    };
+                    
+                    document.getElementById('cameraStatus').textContent = '📷 Camera ready';
+                    this.cameraEnabled = true;
+                } catch (error) {
+                    console.error('Camera access denied:', error);
+                    document.getElementById('cameraStatus').textContent = '📷 Camera unavailable - Use mouse/touch';
+                    this.setupFallbackControls();
+                }
+            }
+
+            initializeMediaPipe() {
+                this.hands = new Hands({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                });
+
+                this.hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                this.hands.onResults((results) => this.onResults(results));
+
+                const camera = new Camera(this.video, {
+                    onFrame: async () => {
+                        if (this.cameraEnabled) {
+                            await this.hands.send({ image: this.video });
+                        }
+                    },
+                    width: 640,
+                    height: 480
+                });
+                camera.start();
+            }
+
+            onResults(results) {
+                this.outputCtx.save();
+                this.outputCtx.clearRect(0, 0, this.outputCanvas.width, this.outputCanvas.height);
+                this.outputCtx.drawImage(results.image, 0, 0, this.outputCanvas.width, this.outputCanvas.height);
+
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    const landmarks = results.multiHandLandmarks[0];
+                    const indexTip = landmarks[8]; // Index finger tip
+                    
+                    // Convert to game coordinates
+                    const gameX = (1 - indexTip.x) * this.canvas.width; // Mirror horizontally
+                    const gameY = indexTip.y * this.canvas.height;
+                    
+                    this.fingerPosition = { x: gameX, y: gameY };
+                    this.updateFingerIndicator(gameX, gameY);
+                    
+                    // Draw finger tracking on output canvas
+                    drawConnectors(this.outputCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+                    drawLandmarks(this.outputCtx, landmarks, {color: '#FF0000', lineWidth: 1});
+                    
+                    document.getElementById('cameraStatus').textContent = '📷 Finger detected';
+                } else {
+                    this.fingerPosition = null;
+                    document.getElementById('fingerIndicator').style.display = 'none';
+                    document.getElementById('cameraStatus').textContent = '📷 Show your index finger';
+                }
+                
+                this.outputCtx.restore();
+            }
+
+            updateFingerIndicator(x, y) {
+                const indicator = document.getElementById('fingerIndicator');
+                indicator.style.display = 'block';
+                indicator.style.left = x + 'px';
+                indicator.style.top = y + 'px';
+            }
+
+            setupFallbackControls() {
+                // Mouse control
+                this.canvas.addEventListener('mousemove', (e) => {
+                    if (!this.cameraEnabled) {
+                        const rect = this.canvas.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const y = e.clientY - rect.top;
+                        this.fingerPosition = { x, y };
+                        this.updateFingerIndicator(x, y);
+                    }
+                });
+
+                // Touch control
+                this.canvas.addEventListener('touchmove', (e) => {
+                    if (!this.cameraEnabled) {
+                        e.preventDefault();
+                        const rect = this.canvas.getBoundingClientRect();
+                        const touch = e.touches[0];
+                        const x = touch.clientX - rect.left;
+                        const y = touch.clientY - rect.top;
+                        this.fingerPosition = { x, y };
+                        this.updateFingerIndicator(x, y);
+                    }
+                });
+            }
+
+            setupEventListeners() {
+                document.getElementById('startBtn').addEventListener('click', () => this.startGame());
+                document.getElementById('pauseBtn').addEventListener('click', () => this.pauseGame());
+                document.getElementById('resetBtn').addEventListener('click', () => this.resetGame());
+                document.getElementById('toggleCamera').addEventListener('click', () => this.toggleCamera());
+                
+                this.setupFallbackControls();
+            }
+
+            toggleCamera() {
+                this.cameraEnabled = !this.cameraEnabled;
+                const btn = document.getElementById('toggleCamera');
+                btn.textContent = this.cameraEnabled ? '📷 Disable Camera' : '📷 Enable Camera';
+                
+                if (!this.cameraEnabled) {
+                    document.getElementById('cameraStatus').textContent = '📷 Camera disabled - Use mouse/touch';
+                    document.getElementById('fingerIndicator').style.display = 'none';
+                }
+            }
+
+            updateDirection() {
+                if (!this.fingerPosition || !this.gameRunning || this.gamePaused) return;
+
+                const head = this.snake[0];
+                const headPixelX = head.x * this.gridSize + this.gridSize / 2;
+                const headPixelY = head.y * this.gridSize + this.gridSize / 2;
+
+                const dx = this.fingerPosition.x - headPixelX;
+                const dy = this.fingerPosition.y - headPixelY;
+
+                // Determine primary direction based on larger displacement
+                let newDirection = { x: 0, y: 0 };
+                
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    newDirection.x = dx > 0 ? 1 : -1;
+                } else {
+                    newDirection.y = dy > 0 ? 1 : -1;
+                }
+
+                // Prevent immediate reversal
+                if (newDirection.x !== -this.lastDirection.x || newDirection.y !== -this.lastDirection.y) {
+                    this.direction = newDirection;
+                }
+            }
+
+            startGame() {
+                if (!this.gameRunning) {
+                    this.gameRunning = true;
+                    this.gamePaused = false;
+                    this.updateUI();
+                    this.gameLoop = setInterval(() => this.update(), this.gameSpeed);
+                    this.playSound('start');
+                }
+            }
+
+            pauseGame() {
+                if (this.gameRunning) {
+                    this.gamePaused = !this.gamePaused;
+                    if (this.gamePaused) {
+                        clearInterval(this.gameLoop);
+                    } else {
+                        this.gameLoop = setInterval(() => this.update(), this.gameSpeed);
+                    }
+                    this.updateUI();
+                }
+            }
+
+            resetGame() {
+                clearInterval(this.gameLoop);
+                this.initializeGame();
+                this.playSound('reset');
+            }
+
+            update() {
+                if (!this.gameRunning || this.gamePaused) return;
+
+                this.updateDirection();
+
+                // Move snake
+                const head = { ...this.snake[0] };
+                head.x += this.direction.x;
+                head.y += this.direction.y;
+
+                // Check wall collision
+                if (head.x < 0 || head.x >= this.cols || head.y < 0 || head.y >= this.rows) {
+                    this.gameOver();
+                    return;
+                }
+
+                // Check self collision
+                if (this.snake.some(segment => segment.x === head.x && segment.y === head.y)) {
+                    this.gameOver();
+                    return;
+                }
+
+                this.snake.unshift(head);
+                this.lastDirection = { ...this.direction };
+
+                // Check food collision
+                if (head.x === this.food.x && head.y === this.food.y) {
+                    this.score += 10;
+                    this.speed = Math.min(10, Math.floor(this.score / 50) + 1);
+                    this.gameSpeed = Math.max(80, 150 - (this.speed - 1) * 10);
+                    
+                    clearInterval(this.gameLoop);
+                    this.gameLoop = setInterval(() => this.update(), this.gameSpeed);
+                    
+                    this.food = this.generateFood();
+                    this.playSound('eat');
+                } else {
+                    this.snake.pop();
+                }
+
+                this.updateUI();
+                this.draw();
+            }
+
+            gameOver() {
+                this.gameRunning = false;
+                clearInterval(this.gameLoop);
+                this.updateUI();
+                this.playSound('crash');
+                
+                // Show game over message
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                this.ctx.fillStyle = 'white';
+                this.ctx.font = 'bold 48px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('Game Over!', this.canvas.width / 2, this.canvas.height / 2 - 30);
+                
+                this.ctx.font = '24px Arial';
+                this.ctx.fillText(`Final Score: ${this.score}`, this.canvas.width / 2, this.canvas.height / 2 + 20);
+            }
+
+            draw() {
+                // Clear canvas
+                this.ctx.fillStyle = '#1a1a1a';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Draw grid
+                this.ctx.strokeStyle = '#333';
+                this.ctx.lineWidth = 1;
+                for (let x = 0; x <= this.cols; x++) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x * this.gridSize, 0);
+                    this.ctx.lineTo(x * this.gridSize, this.canvas.height);
+                    this.ctx.stroke();
+                }
+                for (let y = 0; y <= this.rows; y++) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, y * this.gridSize);
+                    this.ctx.lineTo(this.canvas.width, y * this.gridSize);
+                    this.ctx.stroke();
+                }
+
+                // Draw snake
+                this.snake.forEach((segment, index) => {
+                    const hue = (index * 30) % 360;
+                    this.ctx.fillStyle = index === 0 ? '#ff6b6b' : `hsl(${hue}, 70%, 60%)`;
+                    this.ctx.fillRect(
+                        segment.x * this.gridSize + 1,
+                        segment.y * this.gridSize + 1,
+                        this.gridSize - 2,
+                        this.gridSize - 2
+                    );
+                    
+                    // Add shine effect to head
+                    if (index === 0) {
+                        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                        this.ctx.fillRect(
+                            segment.x * this.gridSize + 2,
+                            segment.y * this.gridSize + 2,
+                            this.gridSize / 2,
+                            this.gridSize / 2
+                        );
+                    }
+                });
+
+                // Draw food
+                this.ctx.fillStyle = '#4ade80';
+                this.ctx.beginPath();
+                this.ctx.arc(
+                    this.food.x * this.gridSize + this.gridSize / 2,
+                    this.food.y * this.gridSize + this.gridSize / 2,
+                    this.gridSize / 2 - 2,
+                    0,
+                    2 * Math.PI
+                );
+                this.ctx.fill();
+                
+                // Add food shine
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                this.ctx.beginPath();
+                this.ctx.arc(
+                    this.food.x * this.gridSize + this.gridSize / 2 - 3,
+                    this.food.y * this.gridSize + this.gridSize / 2 - 3,
+                    3,
+                    0,
+                    2 * Math.PI
+                );
+                this.ctx.fill();
+            }
+
+            updateUI() {
+                document.getElementById('score').textContent = this.score;
+                document.getElementById('speed').textContent = this.speed;
+                
+                let status = 'Ready';
+                if (this.gameRunning && !this.gamePaused) status = 'Playing';
+                else if (this.gamePaused) status = 'Paused';
+                else if (this.snake.length > 1 && !this.gameRunning) status = 'Game Over';
+                
+                document.getElementById('status').textContent = status;
+                
+                // Update button states
+                document.getElementById('startBtn').disabled = this.gameRunning && !this.gamePaused;
+                document.getElementById('pauseBtn').disabled = !this.gameRunning;
+                
+                const startBtn = document.getElementById('startBtn');
+                const pauseBtn = document.getElementById('pauseBtn');
+                
+                startBtn.className = startBtn.disabled ? 
+                    'bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold cursor-not-allowed' :
+                    'bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors';
+                    
+                pauseBtn.className = pauseBtn.disabled ?
+                    'bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold cursor-not-allowed' :
+                    'bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors';
+            }
+
+            playSound(type) {
+                // Create audio context for sound effects
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                switch(type) {
+                    case 'eat':
+                        oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+                        oscillator.frequency.exponentialRampToValueAtTime(1200, audioContext.currentTime + 0.1);
+                        gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                        oscillator.start(audioContext.currentTime);
+                        oscillator.stop(audioContext.currentTime + 0.1);
+                        break;
+                    case 'crash':
+                        oscillator.frequency.setValueAtTime(200, audioContext.currentTime);
+                        oscillator.frequency.exponentialRampToValueAtTime(50, audioContext.currentTime + 0.5);
+                        gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                        oscillator.start(audioContext.currentTime);
+                        oscillator.stop(audioContext.currentTime + 0.5);
+                        break;
+                    case 'start':
+                        oscillator.frequency.setValueAtTime(400, audioContext.currentTime);
+                        oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+                        oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.2);
+                        gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                        gainNode.gain.setValueAtTime(0.01, audioContext.currentTime + 0.3);
+                        oscillator.start(audioContext.currentTime);
+                        oscillator.stop(audioContext.currentTime + 0.3);
+                        break;
+                }
+            }
+        }
+
+        // Initialize game when page loads
+        window.addEventListener('load', () => {
+            new FingerSnakeGame();
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            setTimeout(() => {
+                location.reload();
+            }, 100);
+        });
+    </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'97129bbb059e2e9d',t:'MTc1NTUzMjY2MS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
